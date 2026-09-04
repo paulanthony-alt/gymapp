@@ -10,6 +10,11 @@
  *   restSec - rest timer seconds after each logged set
  *   region  - "upper" or "lower" (upper adds +5 lb, lower adds +10 lb on progression)
  *   note    - optional short note shown on the exercise
+ *
+ * A day may instead be an AMRAP (as-many-rounds-as-possible) circuit. Give it
+ *   type: "amrap", durationSec (e.g. 1200 for 20 min), and a movements list of
+ *   { name, reps }. The app then shows a count-down clock and a round counter
+ *   instead of weight/rep logging.
  */
 const PROGRAM = {
   days: [
@@ -69,6 +74,17 @@ const PROGRAM = {
         { name: "Lateral raise",                 sets: 3, repLow: 15, repHigh: 20, restSec: 60,  region: "upper" },
         { name: "Cable fly",                     sets: 3, repLow: 12, repHigh: 15, restSec: 90,  region: "upper" },
         { name: "Biceps + triceps finisher",     sets: 3, repLow: 12, repHigh: 12, restSec: 90,  region: "upper", note: "12 each" }
+      ]
+    },
+    {
+      name: "Day 6 — Spiderman (AMRAP)",
+      type: "amrap",
+      durationSec: 1200,
+      note: "As many rounds as possible in 20 minutes, performed continuously.",
+      movements: [
+        { name: "Pull-ups",   reps: 5 },
+        { name: "Push-ups",   reps: 10 },
+        { name: "Air squats", reps: 15 }
       ]
     }
   ]

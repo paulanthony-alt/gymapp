@@ -23,11 +23,24 @@ Double progression on a per-exercise rep range:
 - Miss the **bottom** of the range two sessions in a row → *"Stalled 2 sessions — hold or deload 10%."*
 - Training-week counter increments each time you finish Day 5. Weeks 7 & 8 show a dismissible **deload** banner. Adjust or reset the counter in Settings.
 
+## AMRAP / circuit days
+
+A day can be a timed **AMRAP** (as-many-rounds-as-possible) circuit instead of
+weighted sets. Day 6 (Spiderman) is one: 20 minutes of 5 pull-ups / 10 push-ups
+/ 15 air squats. The Active Session shows a big count-down clock (which resumes
+correctly if you reload mid-workout) and a one-thumb **＋ Round** counter, with
+an optional partial-reps stepper for the final unfinished round. Rounds are
+written to storage on every tap, History shows rounds + total reps, and Progress
+plots your rounds over time under **Conditioning**. AMRAP days don't affect the
+double-progression prompts or the training-week counter (that still advances on
+the last strength day).
+
 ## Editing the program
 
 All exercises, sets, rep ranges, rest times, and upper/lower flags live in
 [`program.js`](program.js) as a plain data structure. Edit that file directly —
-no app logic to touch.
+no app logic to touch. To make a day an AMRAP circuit, give it
+`type: "amrap"`, a `durationSec`, and a `movements` list of `{ name, reps }`.
 
 ## Run it
 

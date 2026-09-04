@@ -268,6 +268,25 @@ textarea.inline-input { padding: 10px 12px; resize: vertical; min-height: 72px; 
 .nav-arrows { display: flex; gap: 10px; margin: 8px 0; }
 .nav-arrows button { flex: 1; }
 
+/* ---------- AMRAP session ---------- */
+.amrap-clock {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.amrap-clock.done { background: var(--accent-dim); border-color: var(--accent); }
+.amrap-clock .lbl { color: var(--text-dim); font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+.amrap-clock .time { font-size: 64px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; line-height: 1.1; }
+.amrap-progwrap { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.amrap-prog { height: 100%; background: var(--accent); transition: width 1s linear; }
+
+.amrap-count { text-align: center; margin: 6px 0 10px; }
+.amrap-count .n { font-size: 72px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+.amrap-count .l { color: var(--text-dim); font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; }
+
 /* ---------- Progress / charts ---------- */
 select.inline-input { appearance: none; -webkit-appearance: none; }
 .chart { width: 100%; height: auto; display: block; background: var(--surface); border-radius: 10px; }

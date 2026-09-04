@@ -97,7 +97,9 @@
     const hist = getHistory();
     for (let i = hist.length - 1; i >= 0; i--) {
       if (excludeId && hist[i].id === excludeId) continue;
-      const ex = hist[i].exercises.find(e => e.name === name && e.sets.length);
+      const exs = hist[i].exercises;
+      if (!exs) continue; // AMRAP sessions have no exercises
+      const ex = exs.find(e => e.name === name && e.sets.length);
       if (ex) return { session: hist[i], ex };
     }
     return null;
@@ -106,8 +108,18 @@
   // Every session entry for an exercise, oldest -> newest, only those with sets.
   function allSessionsForExercise(name) {
     return getHistory()
-      .filter(s => s.exercises.some(e => e.name === name && e.sets.length))
+      .filter(s => s.exercises && s.exercises.some(e => e.name === name && e.sets.length))
       .map(s => ({ date: s.date, ex: s.exercises.find(e => e.name === name && e.sets.length) }));
+  }
+
+  // Most recent completed AMRAP session for a given day name.
+  function lastAmrapForDay(dayName, excludeId) {
+    const hist = getHistory();
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (excludeId && hist[i].id === excludeId) continue;
+      if (hist[i].type === "amrap" && hist[i].dayName === dayName) return hist[i];
+    }
+    return null;
   }
 
   function workSetsSummary(sets) { return sets.map(s => s.reps).join("×"); }
@@ -186,6 +198,33 @@
   };
 
   /* ============================================================
+   * AMRAP clock — a continuous count-down for circuit days.
+   * Driven off the session start time, so a reload resumes correctly.
+   * ========================================================== */
+  let amrapInterval = null;
+  function startAmrapClock(a) {
+    stopAmrapClock();
+    const update = () => {
+      const elapsed = Math.floor((Date.now() - a.startTime) / 1000);
+      const remaining = Math.max(0, a.durationSec - elapsed);
+      const clock = document.getElementById("amrapclock");
+      const prog = document.getElementById("amrapprog");
+      const lbl = document.getElementById("amraplbl");
+      if (clock) clock.textContent = fmtClock(remaining);
+      if (prog) prog.style.width = (100 * remaining / a.durationSec) + "%";
+      if (remaining <= 0) {
+        stopAmrapClock();
+        if (clock) clock.textContent = "0:00";
+        if (lbl) lbl.textContent = "Time — finish up";
+        if (navigator.vibrate) navigator.vibrate([300, 120, 300, 120, 300]);
+      }
+    };
+    update();
+    amrapInterval = setInterval(update, 1000);
+  }
+  function stopAmrapClock() { if (amrapInterval) { clearInterval(amrapInterval); amrapInterval = null; } }
+
+  /* ============================================================
    * Router / screen state
    * ========================================================== */
   const APP = document.getElementById("app");
@@ -240,8 +279,9 @@
       ]));
     }
 
-    // Rest timer bar — only during active session and when running/finished.
-    if (screen === "session" && Timer.total > 0) {
+    // Rest timer bar — only during a strength session (AMRAP has its own clock).
+    const act = getActive();
+    if (screen === "session" && (!act || act.type !== "amrap") && Timer.total > 0) {
       const wrap = el("div", { id: "timerwrap" });
       const done = Timer.remaining <= 0;
       const tb = el("div", { id: "timerbar", class: done ? "done" : "" }, [
@@ -286,6 +326,15 @@
 
     APP.appendChild(el("h2", { text: day.name, class: "mb" }));
 
+    if (day.type === "amrap") {
+      renderAmrapToday(day);
+      APP.appendChild(el("button", {
+        class: "btn-primary", text: "Start Workout",
+        onclick: () => startWorkout(dayIdx)
+      }));
+      return;
+    }
+
     // Exercise list with target + last-time + progression prompts
     const card = el("div", { class: "card" });
     day.exercises.forEach(exDef => {
@@ -325,6 +374,21 @@
     }));
   }
 
+  function renderAmrapToday(day) {
+    const card = el("div", { class: "card" });
+    card.appendChild(el("div", { class: "ex-meta mb", text: day.note || "As many rounds as possible." }));
+    card.appendChild(el("div", { class: "field-label", text: "One round · " + fmtClock(day.durationSec) + " cap" }));
+    day.movements.forEach(m => card.appendChild(el("div", { class: "ex-line" }, [
+      el("div", { class: "ex-name", text: m.name }),
+      el("div", { class: "ex-last", text: m.reps + " reps" })
+    ])));
+    const last = lastAmrapForDay(day.name);
+    card.appendChild(el("div", { class: "ex-meta mt", text: last
+      ? "Last time: " + last.rounds + " rounds" + (last.extraReps ? " +" + last.extraReps + " reps" : "") + " · " + fmtDate(last.date)
+      : "No history yet" }));
+    APP.appendChild(card);
+  }
+
   function lastText(ex) {
     if (!ex.sets.length) return "—";
     const w = maxWeight(ex.sets);
@@ -336,22 +400,31 @@
    * ========================================================== */
   function startWorkout(dayIdx) {
     const day = PROGRAM.days[dayIdx];
-    const active = {
-      id: "s" + Date.now(),
-      date: new Date().toISOString(),
-      startTime: Date.now(),
-      dayIndex: dayIdx,
-      dayName: day.name,
-      currentExerciseIndex: 0,
-      exercises: day.exercises.map(d => ({
-        name: d.name, targetSets: d.sets, repLow: d.repLow, repHigh: d.repHigh,
-        restSec: d.restSec, region: d.region, note: d.note || "",
-        sets: [], notes: "", planned: true
-      }))
-    };
+    let active;
+    if (day.type === "amrap") {
+      active = {
+        id: "s" + Date.now(), date: new Date().toISOString(), startTime: Date.now(),
+        dayIndex: dayIdx, dayName: day.name, type: "amrap",
+        durationSec: day.durationSec, note: day.note || "",
+        movements: day.movements.map(m => ({ name: m.name, reps: m.reps })),
+        repsPerRound: day.movements.reduce((s, m) => s + m.reps, 0),
+        rounds: 0, extraReps: 0, notes: ""
+      };
+    } else {
+      active = {
+        id: "s" + Date.now(), date: new Date().toISOString(), startTime: Date.now(),
+        dayIndex: dayIdx, dayName: day.name, type: "strength", currentExerciseIndex: 0,
+        exercises: day.exercises.map(d => ({
+          name: d.name, targetSets: d.sets, repLow: d.repLow, repHigh: d.repHigh,
+          restSec: d.restSec, region: d.region, note: d.note || "",
+          sets: [], notes: "", planned: true
+        }))
+      };
+    }
     setActive(active);
     todayDayIndex = null;
     Timer.skip();
+    stopAmrapClock();
     go("session");
   }
 
@@ -360,6 +433,7 @@
   function renderSession() {
     const a = getActive();
     if (!a) { go("today"); return; }
+    if (a.type === "amrap") { renderAmrapSession(a); return; }
     const idx = a.currentExerciseIndex;
     const ex = a.exercises[idx];
     const exDef = { name: ex.name, repLow: ex.repLow, repHigh: ex.repHigh, region: ex.region };
@@ -515,20 +589,21 @@
     render();
   }
 
-  function stepperInput(label, ghost, step, kind) {
+  function stepperInput(label, ghost, step, kind, onChange) {
     const input = el("input", {
       type: "number", inputmode: "decimal", step: String(step),
       placeholder: ghost === "" || ghost == null ? "" : String(ghost)
     });
-    const clamp = () => { if (num(input.value) < 0) input.value = "0"; };
+    const fire = () => { if (onChange) onChange(input.value !== "" ? num(input.value) : 0); };
     const dec = el("button", { text: "–", "aria-label": "decrease", onclick: () => {
       const base = input.value !== "" ? num(input.value) : (ghost !== "" ? num(ghost) : 0);
-      input.value = Math.max(0, base - step); clamp();
+      input.value = Math.max(0, base - step); fire();
     }});
     const inc = el("button", { text: "+", "aria-label": "increase", onclick: () => {
       const base = input.value !== "" ? num(input.value) : (ghost !== "" ? num(ghost) : 0);
-      input.value = base + step;
+      input.value = base + step; fire();
     }});
+    if (onChange) input.addEventListener("input", fire);
     const wrap = el("div", {}, [
       el("div", { class: "field-label", text: label }),
       el("div", { class: "stepper" }, [dec, input, inc])
@@ -542,6 +617,7 @@
   function finishWorkout() {
     const a = getActive();
     if (!a) return;
+    if (a.type === "amrap") { finishAmrap(a); return; }
     const logged = a.exercises.filter(e => e.sets.length);
     if (!logged.length) {
       if (!confirm("No sets logged. Discard this workout?")) return;
@@ -563,13 +639,119 @@
     setHistory(hist);
 
     // Update week + last-completed state
-    const state = getState();
-    state.lastCompletedDayIndex = a.dayIndex;
-    if (a.dayIndex === PROGRAM.days.length - 1) state.weekCounter += 1; // finished a cycle
-    setState(state);
-
+    commitCompletion(a.dayIndex);
     setActive(null);
     Timer.skip();
+    go("history");
+  }
+
+  // Last non-AMRAP day drives the week counter (AMRAP days are optional add-ons).
+  function lastStrengthDayIndex() {
+    let idx = 0;
+    PROGRAM.days.forEach((d, i) => { if (d.type !== "amrap") idx = i; });
+    return idx;
+  }
+  function commitCompletion(dayIndex) {
+    const state = getState();
+    state.lastCompletedDayIndex = dayIndex;
+    if (dayIndex === lastStrengthDayIndex()) state.weekCounter += 1; // finished a cycle
+    setState(state);
+  }
+
+  function renderAmrapSession(a) {
+    // Keep the clock running (survives re-renders via element ids; resumes after reload).
+    const elapsed = Math.floor((Date.now() - a.startTime) / 1000);
+    const remaining = Math.max(0, a.durationSec - elapsed);
+    if (!amrapInterval && remaining > 0) startAmrapClock(a);
+
+    APP.appendChild(el("div", { class: "session-top" }, [
+      el("div", {}, [
+        el("div", { class: "ex-counter", text: a.dayName }),
+        el("div", { class: "ex-counter", text: "AMRAP — as many rounds as possible" })
+      ]),
+      el("button", { class: "btn-sm", text: "Finish", onclick: finishWorkout })
+    ]));
+
+    // Big clock
+    const done = remaining <= 0;
+    APP.appendChild(el("div", { class: "amrap-clock" + (done ? " done" : "") }, [
+      el("div", { id: "amraplbl", class: "lbl", text: done ? "Time — finish up" : "Time remaining" }),
+      el("div", { id: "amrapclock", class: "time mono", text: fmtClock(remaining) }),
+      el("div", { class: "amrap-progwrap" }, [el("div", { id: "amrapprog", class: "amrap-prog", style: "width:" + (100 * remaining / a.durationSec) + "%" })])
+    ]));
+
+    // Round counter — the fast one-thumb control
+    APP.appendChild(el("div", { class: "amrap-count" }, [
+      el("div", { class: "n mono", text: String(a.rounds) }),
+      el("div", { class: "l", text: "rounds" })
+    ]));
+    APP.appendChild(el("button", {
+      class: "btn-primary", text: "＋ Round",
+      onclick: () => { a.rounds += 1; a.extraReps = 0; saveActive(a); render(); }
+    }));
+    APP.appendChild(el("div", { class: "nav-arrows" }, [
+      el("button", {
+        class: "btn-ghost", text: "− Round", disabled: a.rounds === 0 ? "" : null,
+        onclick: () => { if (a.rounds > 0) { a.rounds -= 1; saveActive(a); render(); } }
+      })
+    ]));
+
+    // One round recipe
+    const recipe = el("div", { class: "card mt" }, [el("div", { class: "field-label", text: "One round" })]);
+    a.movements.forEach(m => recipe.appendChild(el("div", { class: "ex-line" }, [
+      el("div", { class: "ex-name", text: m.name }),
+      el("div", { class: "ex-last", text: m.reps + " reps" })
+    ])));
+    APP.appendChild(recipe);
+
+    // Total reps readout (updated live as partial reps change)
+    const totalEl = el("div", { class: "tiny dim mt" });
+    const paintTotal = () => {
+      totalEl.textContent = "Total reps: " + (a.rounds * a.repsPerRound + (a.extraReps || 0)) + " (" + a.repsPerRound + "/round)";
+    };
+
+    // Optional partial reps into the current (unfinished) round
+    const extra = stepperInput("Partial reps this round", a.extraReps || 0, 1, "reps",
+      (v) => { a.extraReps = Math.max(0, v); saveActive(a); paintTotal(); });
+    extra.input.value = a.extraReps || 0;
+    APP.appendChild(el("div", { class: "mt" }, [extra.wrap]));
+
+    paintTotal();
+    APP.appendChild(totalEl);
+
+    // Notes
+    APP.appendChild(el("div", { class: "field-label mt", text: "Notes" }));
+    const ta = el("textarea", {
+      class: "inline-input", placeholder: "Notes for this session…",
+      oninput: (e) => { a.notes = e.target.value; saveActive(a); }
+    }, a.notes || "");
+    APP.appendChild(ta);
+
+    APP.appendChild(el("button", {
+      class: "btn-danger btn-block mt", text: "Discard workout",
+      onclick: () => { if (confirm("Discard this workout? Logged rounds will be lost.")) { setActive(null); stopAmrapClock(); go("today"); } }
+    }));
+  }
+
+  function finishAmrap(a) {
+    if (!a.rounds && !a.extraReps) {
+      if (!confirm("No rounds logged. Discard this workout?")) return;
+      setActive(null); stopAmrapClock(); go("today"); return;
+    }
+    if (!confirm("Finish and save this workout?")) return;
+    const elapsed = Math.round((Date.now() - a.startTime) / 1000);
+    const session = {
+      id: a.id, date: a.date, dayIndex: a.dayIndex, dayName: a.dayName, type: "amrap",
+      durationSec: Math.min(a.durationSec, elapsed), plannedDurationSec: a.durationSec,
+      rounds: a.rounds, extraReps: a.extraReps || 0,
+      movements: a.movements, repsPerRound: a.repsPerRound, notes: a.notes || ""
+    };
+    const hist = getHistory();
+    hist.push(session);
+    setHistory(hist);
+    commitCompletion(a.dayIndex);
+    setActive(null);
+    stopAmrapClock();
     go("history");
   }
 
@@ -603,14 +785,41 @@
     // ---- Bodyweight ----
     APP.appendChild(el("h2", { text: "Bodyweight" }));
     APP.appendChild(renderBodyweight());
+
+    // ---- Conditioning (AMRAP rounds over time) ----
+    const amrap = getHistory().filter(s => s.type === "amrap");
+    if (amrap.length) {
+      APP.appendChild(el("div", { class: "divider" }));
+      APP.appendChild(el("h2", { text: "Conditioning — rounds", class: "mb" }));
+      // Group by day name (usually just one AMRAP day).
+      const byDay = {};
+      amrap.forEach(s => { (byDay[s.dayName] = byDay[s.dayName] || []).push(s); });
+      Object.keys(byDay).forEach(dayName => {
+        const list = byDay[dayName];
+        const pts = list.map((s, i) => ({ x: i, y: s.rounds + (s.extraReps || 0) / (s.repsPerRound || 1) }));
+        const best = list.reduce((m, s) => Math.max(m, s.rounds), 0);
+        APP.appendChild(el("div", { class: "small dim mb", text: dayName }));
+        APP.appendChild(lineChart(pts, { labels: list.map(s => fmtDateShort(s.date)), unit: "" }));
+        APP.appendChild(el("div", { class: "pb-grid" }, [
+          el("div", { class: "pb-box" }, [
+            el("div", { class: "n mono", text: String(best) }),
+            el("div", { class: "l", text: "Best rounds" })
+          ]),
+          el("div", { class: "pb-box" }, [
+            el("div", { class: "n mono", text: String(list.length) }),
+            el("div", { class: "l", text: "Sessions" })
+          ])
+        ]));
+      });
+    }
   }
 
   function exerciseNamesWithHistory() {
     const set = new Set();
-    getHistory().forEach(s => s.exercises.forEach(e => { if (e.sets.length) set.add(e.name); }));
+    getHistory().forEach(s => (s.exercises || []).forEach(e => { if (e.sets.length) set.add(e.name); }));
     // Order by program order, then extras
     const ordered = [];
-    PROGRAM.days.forEach(d => d.exercises.forEach(e => { if (set.has(e.name) && !ordered.includes(e.name)) ordered.push(e.name); }));
+    PROGRAM.days.forEach(d => (d.exercises || []).forEach(e => { if (set.has(e.name) && !ordered.includes(e.name)) ordered.push(e.name); }));
     set.forEach(n => { if (!ordered.includes(n)) ordered.push(n); });
     return ordered;
   }
@@ -806,7 +1015,9 @@
     hist.forEach(session => {
       const card = el("div", { class: "card" });
       const open = openHistoryId === session.id;
-      const totalSets = session.exercises.reduce((s, e) => s + e.sets.length, 0);
+      const summary = session.type === "amrap"
+        ? session.rounds + " rounds" + (session.extraReps ? " +" + session.extraReps : "")
+        : (session.exercises || []).reduce((s, e) => s + e.sets.length, 0) + " sets";
 
       card.appendChild(el("button", {
         class: "hist-item btn-ghost", style: "border:none;background:transparent;padding:4px 0;",
@@ -814,7 +1025,7 @@
       }, [
         el("div", {}, [
           el("div", { text: session.dayName, style: "font-weight:600" }),
-          el("div", { class: "meta", text: fmtDate(session.date) + " · " + fmtDuration(session.durationSec) + " · " + totalSets + " sets" })
+          el("div", { class: "meta", text: fmtDate(session.date) + " · " + fmtDuration(session.durationSec) + " · " + summary })
         ]),
         el("div", { class: "dim", text: open ? "▲" : "▼" })
       ]));
@@ -822,7 +1033,7 @@
       if (open) {
         card.appendChild(el("div", { class: "divider" }));
         if (editHistoryId === session.id) card.appendChild(renderHistoryEdit(session));
-        else card.appendChild(renderHistoryDetail(session));
+        else card.appendChild(session.type === "amrap" ? renderAmrapDetail(session) : renderHistoryDetail(session));
       }
       APP.appendChild(card);
     });
@@ -851,7 +1062,61 @@
     return wrap;
   }
 
+  function renderAmrapEdit(session) {
+    const draft = JSON.parse(JSON.stringify(session));
+    const wrap = el("div", {});
+    const rounds = stepperInput("Rounds", draft.rounds, 1, "reps");
+    rounds.input.value = draft.rounds;
+    const extra = stepperInput("Extra reps", draft.extraReps || 0, 1, "reps");
+    extra.input.value = draft.extraReps || 0;
+    wrap.appendChild(el("div", { class: "log-grid" }, [rounds.wrap, extra.wrap]));
+    wrap.appendChild(el("div", { class: "row-btns mt" }, [
+      el("button", {
+        class: "btn-sm btn-primary", text: "Save changes",
+        onclick: () => {
+          draft.rounds = Math.max(0, num(rounds.input.value));
+          draft.extraReps = Math.max(0, num(extra.input.value));
+          setHistory(getHistory().map(s => s.id === draft.id ? draft : s));
+          editHistoryId = null; render();
+        }
+      }),
+      el("button", { class: "btn-sm", text: "Cancel", onclick: () => { editHistoryId = null; render(); } })
+    ]));
+    return wrap;
+  }
+
+  function renderAmrapDetail(session) {
+    const wrap = el("div", {});
+    const total = session.rounds * session.repsPerRound + (session.extraReps || 0);
+    wrap.appendChild(el("div", { class: "pb-grid mb" }, [
+      el("div", { class: "pb-box" }, [
+        el("div", { class: "n mono", text: session.rounds + (session.extraReps ? " +" + session.extraReps : "") }),
+        el("div", { class: "l", text: "rounds" })
+      ]),
+      el("div", { class: "pb-box" }, [
+        el("div", { class: "n mono", text: String(total) }),
+        el("div", { class: "l", text: "total reps" })
+      ])
+    ]));
+    (session.movements || []).forEach(m =>
+      wrap.appendChild(el("div", { class: "small dim", text: m.reps + " × " + m.name })));
+    if (session.notes) wrap.appendChild(el("div", { class: "small dim mt", text: "Note: " + session.notes }));
+    wrap.appendChild(el("div", { class: "row-btns mt" }, [
+      el("button", { class: "btn-sm", text: "Edit", onclick: () => { editHistoryId = session.id; render(); } }),
+      el("button", {
+        class: "btn-sm btn-danger", text: "Delete",
+        onclick: () => {
+          if (!confirm("Delete this workout permanently?")) return;
+          setHistory(getHistory().filter(s => s.id !== session.id));
+          openHistoryId = null; render();
+        }
+      })
+    ]));
+    return wrap;
+  }
+
   function renderHistoryEdit(session) {
+    if (session.type === "amrap") return renderAmrapEdit(session);
     // Work on a deep copy; commit on save.
     const draft = JSON.parse(JSON.stringify(session));
     const wrap = el("div", {});
